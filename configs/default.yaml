@@ -1,0 +1,77 @@
+# Copy to configs/private.local.yaml; paths are relative to that YAML file.
+paths:
+  nodes: ../data/private/nodes.csv
+  template: ../data/private/grid.tif
+  geology: ../data/private/geology.local.yaml
+  work: ../outputs/run
+
+features:
+  continuous: [geochem_1_clr, geochem_2_clr, geochem_3_clr, aeromagnetic_F3, distance_to_intrusion_m]
+  categorical: [stratigraphic_age]
+  geochemistry: [geochem_1_clr, geochem_2_clr, geochem_3_clr]
+  aeromagnetic: aeromagnetic_F3
+  # CLR is optional; leave [] if your input columns are already CLR values.
+  clr: []
+  log1p: [distance_to_intrusion_m]
+
+# Apply these helpers to assay locations before creating aligned feature grids.
+preprocessing:
+  invalid_values: [-1.0e+38]
+  zero_replacement: half_min_positive
+  idw:
+    power: 2.0
+    search_radius_m: 2000.0
+    max_neighbors: 12
+    min_neighbors: 3
+    fallback_search_radius_m: 5000.0
+    fallback_min_neighbors: 3
+
+graph:
+  candidate_radius_m: 1500.0
+  fault_buffer_m: 1000.0
+  fault_tangent_half_window_m: 500.0
+  fault_along_max_m: 2000.0
+  fault_decay_m: 2000.0
+  fault_min_cosine_squared: 0.5
+
+sampling:
+  seed: 137
+  split_seed: 42
+  cv_seed: 20261010
+  exclusion_buffer_m: 3000.0
+  minimum_negative_spacing_cells: 3
+  test_fraction: 0.2
+  # null: round(test_fraction * number of positive centers).
+  test_positive_centers: null
+
+model:
+  dropout: 0.3
+  hidden_channels: 16
+  attention_heads: 2
+  encoder_width: 8
+  embedding_dim: 4
+  relation_dim: 2
+  grid_size: 3
+  spline_order: 3
+  relation_strength: 0.25
+  relation_regularization_scale: 0.5
+  graph_gate_initial: 0.2
+  graph_gate_max: 0.45
+  edge_chunk_size: 8192
+  geo_gain_initial: 0.5
+  geo_regularization_scale: 0.01
+  geo_residual_scale: 3.0
+
+training:
+  seed: 42
+  device: cpu
+  epochs: 200
+  patience: 30
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  spline_l1: 0.006
+  spline_smoothness: 0.000001
+  label_smoothing: 0.1
+  clip_grad_norm: 1.0
+  batch_size: 256
+  inference_batch_size: 1024

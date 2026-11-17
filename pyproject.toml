@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "geoka-gnn-prospectivity"
+version = "0.2.0"
+description = "GeoKA-GNN for mineral prospectivity mapping from multi-source geoscience data"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<3", "pandas>=2.1,<3", "scipy>=1.11,<2",
+  "scikit-learn>=1.4,<2", "torch>=2.2,<3", "torch-geometric>=2.5,<3",
+  "rasterio>=1.3,<2", "shapely>=2,<3", "PyYAML>=6,<7"
+]
+
+[project.scripts]
+geoka-prospectivity = "relation_kagat.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
