@@ -151,19 +151,33 @@ def check(root):
     settings["dropout"] = 0.
     torch.manual_seed(39)
     model = RelationKAGAT(4, [3], settings, [0, 1]).eval()
-    for layer in [*model.geo_bias, *model.geo_selector, *model.geo_messages]:
-        torch.nn.init.normal_(layer.weight, std=.15)
     x = torch.cat((torch.randn(80, 4), torch.ones(80, 1), torch.tensor([[0., 1., 0.]]).repeat(80, 1)), 1)
     edges = torch.tensor(np.concatenate((pairs, pairs[:, ::-1])).T)
     attrs = torch.tensor(np.tile(np.c_[np.linalg.norm(xy[pairs[:, 0]] - xy[pairs[:, 1]], axis=1) / 1500, actual], (2, 1)), dtype=torch.float32)
     reference = copy.deepcopy(model)
-    reference.message_mode, reference.capture = "difference", False
-    forward = function(root / "outputs/geological_relations/code/last_model.py", "forward",
-                       dict(torch=torch, F=F, softmax=softmax), "FinalRoundKAN")
-    packed = torch.zeros(len(attrs), 8)
-    packed[:, 0], packed[:, 5:] = attrs[:, 0], attrs[:, 1:]
+    reference.graph_operator = "gat"
+    # Section 2.3 uses one relation for all four attributes. Compare the original
+    # joint encoder, attention and message functions without independent channels.
+    path = root / "model/relation_ka_gat.py"
+    namespace = dict(torch=torch, F=F, softmax=softmax)
+    encode = function(path, "_encode_relation", namespace, "RelationKAGATV2")
+    attention = function(path, "_aggregation_weights", namespace, "RelationKAGATV2")
+    message = function(path, "_encode_message", namespace, "RelationKAGATV2")
     with torch.no_grad():
-        expected = forward(reference, x, edges, packed)
+        continuous = x[:, :4].clone()
+        continuous[:, [0, 1]] *= x[:, -2:-1]
+        node_input = torch.cat((torch.tanh(continuous / 3), reference.embeddings[0](x[:, 4].long()), x[:, -3:]), -1)
+        h = reference.node_second(torch.tanh(reference.node_first(node_input)))
+        source, target = edges
+        relation = encode(reference, h[source], h[target], attrs)
+        alpha = attention(reference, h, source, target, relation)
+        gate = reference.edge_selector(relation).sigmoid()
+        messages = message(reference, h[source], relation).reshape(-1, reference.heads, reference.hidden // reference.heads)
+        weighted = (messages * alpha[:, :, None] * gate[:, :, None]).reshape(-1, reference.hidden)
+        aggregate = torch.zeros_like(h).index_add_(0, target, weighted)
+        gamma = reference.graph_gate.sigmoid().clamp(max=reference.graph_gate_max)
+        updated = reference.output_norm(h + gamma * reference.update(torch.cat((h, aggregate), -1)))
+        expected = reference.prediction_head(torch.tanh(updated)).squeeze(-1)
         actual = model(x, edges, attrs)
     result["model_logits_max_abs_error"] = compare(actual.numpy(), expected.numpy())
     result["passed"] = True

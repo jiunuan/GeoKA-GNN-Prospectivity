@@ -205,6 +205,12 @@ class CoreTests(unittest.TestCase):
         with np.load(work / "cross_validation/oof.npz") as oof:
             assert set(oof["node_indices"]) == set(data["development_indices"])
             assert not set(oof["node_indices"]) & test_ids
+            chosen = pipeline.select_youden_threshold(oof["labels"], oof["raw_scores"])
+        assert summary["threshold_selection"] == chosen
+        checkpoint = torch.load(work / "model.pt", weights_only=True)
+        assert checkpoint["classification_threshold"] == chosen["threshold"]
+        result = json.loads((work / "test_metrics.json").read_text())
+        assert result["threshold"] == chosen["threshold"]
         assert json.loads((work / "run_status.json").read_text())["status"] == "trained"
         # Test the publication state machine with controlled scores, independently
         # of the stochastic skill of a two-epoch synthetic model.

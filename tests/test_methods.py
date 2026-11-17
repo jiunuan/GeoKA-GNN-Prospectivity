@@ -129,20 +129,17 @@ class MethodTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "CRS"):
             read_geology(path, template)
 
-    def test_model_each_geological_channel_affects_predictions(self):
+    def test_joint_relation_uses_each_geological_attribute(self):
         torch.manual_seed(16)
         model = RelationKAGAT(2, [3], self.config()["model"], [0]).eval()
-        for layer in [*model.geo_bias, *model.geo_selector, *model.geo_messages]:
-            torch.nn.init.normal_(layer.weight, std=.2)
+        assert not any(name.startswith("geo_") for name, _ in model.named_children())
+        assert model.relation_first.in_features == 2 * model.hidden + 4
         x = torch.cat((torch.randn(6, 2), torch.ones(6, 1), torch.tensor([[0., 1., 0.]]).repeat(6, 1)), 1)
         edges = torch.tensor([[0, 1, 2, 3, 4], [1, 2, 3, 4, 0]])
         attrs = torch.zeros(5, 4)
         attrs[:, 0] = .5
         with torch.no_grad():
             zero = model(x, edges, attrs)
-            model.geo_enabled = False
-            torch.testing.assert_close(zero, model(x, edges, torch.ones_like(attrs) * attrs.new_tensor([.5, 1, 1, 1])))
-            model.geo_enabled = True
             for channel in range(1, 4):
                 changed = attrs.clone()
                 changed[:, channel] = 1
@@ -150,9 +147,64 @@ class MethodTests(unittest.TestCase):
                 full = model(x, edges, changed)
                 batched = predict_logits(model, x, edges, changed, np.arange(6), 2)
                 torch.testing.assert_close(full, batched, atol=2e-6, rtol=1e-5)
-        model.train()
-        model(x, edges, torch.ones_like(attrs)).sum().backward()
-        assert all(encoder.spline_weight.grad.abs().sum() > 0 for encoder in model.geo_encoders)
+        differentiable = torch.ones_like(attrs, requires_grad=True)
+        model(x, edges, differentiable).square().sum().backward()
+        assert torch.all(differentiable.grad.abs().sum(0) > 0)
+
+    def test_joint_forward_matches_paper_equations(self):
+        torch.manual_seed(24)
+        model = RelationKAGAT(2, [3], self.config()["model"]).eval()
+        x = torch.cat((torch.randn(6, 2), torch.ones(6, 1), torch.tensor([[0., 1., 0.]]).repeat(6, 1)), 1)
+        edges = torch.tensor([[0, 1, 2, 3, 4, 1], [2, 2, 3, 0, 0, 4]])
+        attrs = torch.rand(edges.shape[1], 4)
+        from relation_kagat.kan import KANLinear
+        assert sum(isinstance(layer, KANLinear) for layer in model.modules()) == 8
+        with torch.no_grad():
+            inputs = torch.cat((torch.tanh(x[:, :2] / 3), model.embeddings[0](x[:, 2].long()), x[:, -3:]), -1)
+            h = model.node_second(torch.tanh(model.node_first(inputs)))
+            source, target = edges
+            joined = torch.cat(((h[target] - h[source]).abs(), h[target] * h[source], attrs), -1)
+            relation = model.relation_second(torch.tanh(model.relation_first(joined)))
+            energy = torch.nn.functional.leaky_relu(model.attention_target(h)[target] +
+                model.attention_source(h)[source] + model.attention_relation(relation), .2)
+            gate = model.edge_selector(relation).sigmoid()
+            message = model.message(torch.cat((h[source], relation), -1)).reshape(-1, model.heads, model.hidden // model.heads)
+            aggregate = torch.zeros_like(h)
+            for i in range(len(h)):
+                mask = target == i
+                attention = energy[mask].softmax(dim=0)
+                aggregate[i] = (attention[:, :, None] * gate[mask, :, None] * message[mask]).sum(0).reshape(-1)
+            gamma = model.graph_gate.sigmoid().clamp(max=model.graph_gate_max)
+            updated = model.output_norm(h + gamma * model.update(torch.cat((h, aggregate), -1)))
+            expected = model.prediction_head(torch.tanh(updated)).squeeze(-1)
+            torch.testing.assert_close(model(x, edges, attrs), expected, atol=2e-7, rtol=1e-5)
+
+    def test_youden_threshold_uses_sensitivity_and_specificity(self):
+        labels = np.array([0] * 10 + [1, 1])
+        scores = np.array([.05, .1, .15, .2, .25, .3, .4, .65, .7, .75, .6, .9])
+        chosen = pipeline.select_youden_threshold(labels, scores)
+        assert chosen["threshold"] == .6 and not chosen["outer_test_used"]
+        # Exhaustive confusion counts provide an independent oracle for Youden J.
+        objectives = []
+        for cutoff in np.unique(scores):
+            predicted = scores >= cutoff
+            sensitivity = predicted[labels == 1].mean()
+            specificity = (~predicted[labels == 0]).mean()
+            objectives.append(sensitivity + specificity - 1)
+        self.assertAlmostEqual(chosen["Youden_J"], max(objectives))
+        tied = pipeline.select_youden_threshold([0, 1, 0, 1], [.1, .2, .3, .4])
+        assert tied["threshold"] == .4
+        constant = pipeline.select_youden_threshold([0, 1], [.42, .42])
+        assert constant["threshold"] == .42 and constant["Youden_J"] == 0
+        for bad_labels, bad_scores in [([0, 0], [.1, .2]), ([0, 1], [np.nan, .2]), ([0, 1], [-.1, .2])]:
+            with self.assertRaises(ValueError):
+                pipeline.select_youden_threshold(bad_labels, bad_scores)
+
+    def test_obsolete_channel_settings_are_rejected(self):
+        settings = self.config()["model"]
+        settings["geo_residual_scale"] = 3.
+        with self.assertRaisesRegex(ValueError, "Obsolete"):
+            RelationKAGAT(2, [3], settings)
 
     def test_center_groups_patch_spacing_and_each_fold_preprocessing(self):
         path = make_demo(self.root / "demo", ROOT / "configs/default.yaml", 1)
@@ -213,6 +265,13 @@ class MethodTests(unittest.TestCase):
         changed["training"]["learning_rate"] *= 2
         with self.assertRaisesRegex(ValueError, "configuration mismatch"):
             pipeline.cross_validate(changed)
+        summary = Path(cfg["paths"]["work"]) / "cross_validation/summary.json"
+        changed_summary = copy.deepcopy(result)
+        changed_summary["threshold_selection"]["threshold"] += .01
+        summary.write_text(json.dumps(changed_summary), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "threshold changed"):
+            pipeline.cross_validate(cfg)
+        summary.write_text(json.dumps(result), encoding="utf-8")
         history = Path(cfg["paths"]["work"]) / "cross_validation/fold_0_history.json"
         history.write_text("[]", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "artifact changed"):

@@ -49,9 +49,9 @@ python -m relation_kagat.cli predict --config configs/private.local.yaml
 ```
 
 `train` automatically runs or verifies and reuses completed cross-validation, so
-the separate `cross-validate` command is optional. Version 0.2 changes inputs,
-preprocessing, edge layout and architecture. Start a new run; 0.1 caches and
-checkpoints are incompatible.
+the separate `cross-validate` command is optional. Preparation, CV and checkpoints
+are bound to the joint-relation and OOF-threshold protocol. Start a fresh run:
+previous independent-channel caches and checkpoints cannot be loaded directly.
 
 ## Preprocessing and three-fold protocol
 
@@ -78,8 +78,11 @@ checkpoints are incompatible.
   the outer test belongs to no development fold.
 - Choose each fold's checkpoint by its validation AUC. Round the median of the
   three best epochs and refit on all development samples for that fixed duration.
-  Evaluate the final model once on the outer test. The classification threshold
-  is fixed at 0.5 on the raw score.
+  Pool the three validation folds' OOF raw scores and maximize Youden's index,
+  sensitivity + specificity - 1, to select the classification threshold. Ties use
+  the higher finite cutoff, with classification by score >= cutoff. Lock the
+  threshold before final refitting and save it with the checkpoint. Evaluate the
+  final model once on the outer test, whose labels never enter threshold selection.
 
 Learning is transductive: held-out features and spatial connections are available,
 but held-out labels are excluded from the corresponding training. The research
@@ -106,16 +109,21 @@ projection, clipped to fault endpoints. Inferred faults are excluded from both
 fault relations. Same uses actual polygon geometry rather than lithology class
 or stratigraphic age.
 
-KAN node encoding feeds distance-conditioned Edge-KAN, relation attention, soft
-edge gates and KAN message/update/head layers. Same, Along and Cross each have
-independent KAN encoders, attention biases, gate terms and normalized residual
-message channels. Defaults retain dropout 0.3, hidden width 16, two heads, grid
+Following paper Section 2.3, concatenate the absolute node-feature difference,
+elementwise product and all four edge attributes into one two-layer KAN relation
+encoder. The resulting relation representation enters node attention, an Edge-KAN
+sigmoid gate and the neighbor-message KAN. Sum messages weighted by attention
+times the soft gate, apply the update KAN, add the node residual and apply
+LayerNorm. Two node-encoding layers, two relation-encoding layers, the edge gate,
+message, update and prediction head give eight KAN modules.
+Defaults retain dropout 0.3, hidden width 16, two heads, grid
 size 3 and cubic splines. See the configuration for every setting.
 
 ## Outputs and publication check
 
-Runs save fold-specific preprocessing, three CV checkpoints, OOF scores, fold
-mean/standard deviation, the final checkpoint and outer-test metrics. SHA-256
+Runs save fold-specific preprocessing, three CV checkpoints, OOF scores, the
+Youden threshold-selection record, fold mean/standard deviation, the final
+checkpoint and outer-test metrics. SHA-256
 binds inputs, samples, preparation, CV artifacts and the final checkpoint.
 Changed configurations require a new run directory.
 

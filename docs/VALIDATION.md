@@ -1,10 +1,10 @@
 # Method validation / 方法验证
 
-Version 0.2 was checked on 2026-11-17 with Python 3.12 and PyTorch 2.7.1 on CPU.
+The paper-aligned method was checked on 2026-11-18 with Python 3.12 and PyTorch 2.7.1 on CPU.
 All fixtures are generated artificially at runtime. No original research data,
 GIS layers, sample identities, trained weights or research results are required.
 
-0.2版验证只使用人工数据及原项目Python源码，不读取真实研究数据或坐标。
+验证只使用人工数据及原项目Python源码，不读取真实研究数据或坐标。
 
 ## Reproduce the checks
 
@@ -33,15 +33,32 @@ the original entry points or load original NPZ, GIS or checkpoint files.
 | Fixed background center sampling and outer partitions | `model/center_sampling.py:select_negative_centers` | Identical center partitions |
 | Grouped positive centers and shuffled negative three-fold split | Inline fold block in `model/tune_spatial_random_models.py:main` | Identical expanded training/validation indices in all three folds |
 | Same/Along/Cross geometry | `scripts/geological_edge_rules.py:relations`, alignment `min` | Maximum absolute difference 0 across 492 artificial undirected edges |
-| Independent geological-channel forward pass | `outputs/geological_relations/code/last_model.py:FinalRoundKAN.forward` | Maximum absolute logit difference 0 with identical parameters and artificial inputs |
+| Joint four-attribute relation encoding, attention and message arithmetic | `model/relation_ka_gat.py:RelationKAGATV2` joint functions, assembled into the Section 2.3 aggregation | Maximum absolute logit difference 0 with identical parameters and artificial inputs |
 
-The model comparison enables nonzero geological-channel weights. The original
-eight-column reference edge layout is adapted explicitly to the public four-column
-interface, retaining distance in the backbone and independent Same/Along/Cross
-channels. This checks method arithmetic; it is not a historical checkpoint replay.
+All four edge attributes enter one relation encoder. The source comparison uses
+the original joint relation, attention and message functions with a four-column
+interface. A separate regression evaluates the paper's neighbor sum directly,
+including soft gates, multiple incoming edges, isolated nodes and the residual
+LayerNorm update. There are eight KAN modules and no independent geological
+residual channels. These are method checks, not historical checkpoint replays.
 
-上述对照覆盖预处理、抽样、三折索引、几何关系和模型计算。模型对照主动启用了非零地质通道，
-没有用初始化时的零通道掩盖差异。公开默认特征数量、dropout等可调设置不声称与每个历史实验相同。
+上述对照覆盖预处理、抽样、三折索引、几何关系及论文统一关系编码和聚合计算。
+公开默认特征数量和可调训练配置由使用者按数据设置，不声称人工演示复现正文或附录中的历史指标、参数量及计时。
+
+## Classification threshold
+
+Section 4.1 is implemented by maximizing Youden J over pooled development OOF
+scores after the three folds' checkpoints have been selected. J is
+sensitivity + specificity - 1. Among tied maxima, the highest finite cutoff is selected.
+The prediction rule is score >= cutoff. The chosen threshold and objective are
+saved in `cross_validation/threshold_selection.json` and the CV summary, with the
+cutoff also stored in the final checkpoint and test metrics.
+
+The outer test is excluded from OOF coverage and threshold selection. CV reuse
+recomputes the threshold from frozen OOF scores and rejects a changed selection.
+The fixed cutoff is then used to evaluate the final model on the outer test.
+Fold classification metrics use the pooled development threshold and remain
+development summaries. Raw-score thresholds do not apply to area-percentile maps.
 
 ## Regression coverage
 
@@ -55,7 +72,10 @@ channels. This checks method arithmetic; it is not a historical checkpoint repla
   inferred-fault exclusion, strict polygon interior and whole-segment coverage.
 - Every development node validated once; expanded patches do not cross folds;
   the outer test is predicted once after final refit and never during CV.
-- Independent geological channels affect predictions and receive gradients.
+- Every geological attribute affects the joint relation and receives gradients.
+- The eight-module joint architecture matches the Section 2.3 equations.
+- Youden selection matches exhaustive confusion counts, handles tied and constant
+  scores, rejects invalid inputs and persists unchanged from CV to the final test.
 - Changed input/geometry/configuration and changed CV artifacts are rejected.
 - Actual GeoTIFF readback with required quantiles and area fractions; raw-score
   failure stops map release and writes `failed`.

@@ -53,14 +53,10 @@ model:
   relation_dim: 2
   grid_size: 3
   spline_order: 3
-  relation_strength: 0.25
   relation_regularization_scale: 0.5
   graph_gate_initial: 0.2
   graph_gate_max: 0.45
   edge_chunk_size: 8192
-  geo_gain_initial: 0.5
-  geo_regularization_scale: 0.01
-  geo_residual_scale: 3.0
 
 training:
   seed: 42

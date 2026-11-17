@@ -7,14 +7,15 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import roc_auc_score, roc_curve, accuracy_score, precision_score, recall_score, f1_score
 from .graph import build_graph, read_geology, EDGE_NAMES
 from .model import RelationKAGAT, target_subgraph, predict_logits
 from .preprocess import read_nodes, transform_features
 from .quality import export_percentile, write_json
 from .sampling import fixed_samples
 
-SCHEMA = "geoka_three_fold_geology_v2"
+SCHEMA = "geoka_joint_four_relations_oof_youden"
+THRESHOLD_RULE = "maximize_pooled_three_fold_OOF_Youden_J"
 INPUT_KEYS = ["nodes", "template", "geology"]
 
 
@@ -106,13 +107,42 @@ def load_prepared(cfg):
     return data, metadata
 
 
-def metrics(labels, logits):
-    scores = torch.sigmoid(torch.as_tensor(logits)).numpy()
-    predicted = scores >= .5
+def raw_scores(logits):
+    return torch.sigmoid(torch.as_tensor(logits, dtype=torch.float64)).numpy()
+
+
+def select_youden_threshold(labels, scores):
+    """Select once from development OOF scores; never accept test predictions.
+
+    Ties use the highest finite cutoff. Classification always uses score >= cutoff.
+    """
+    labels, scores = np.asarray(labels), np.asarray(scores, dtype=float)
+    if (labels.ndim != 1 or scores.shape != labels.shape or
+            not np.array_equal(np.unique(labels), [0, 1])):
+        raise ValueError("Youden selection requires aligned binary labels with both classes")
+    if not np.isfinite(scores).all() or np.any((scores < 0) | (scores > 1)):
+        raise ValueError("Youden selection requires finite raw scores in [0, 1]")
+    fpr, tpr, cutoffs = roc_curve(labels, scores, drop_intermediate=False)
+    valid = np.isfinite(cutoffs) & (cutoffs >= 0) & (cutoffs <= 1)
+    fpr, tpr, cutoffs = fpr[valid], tpr[valid], cutoffs[valid]
+    objective = tpr - fpr
+    tied = np.flatnonzero(np.isclose(objective, objective.max(), rtol=0, atol=1e-12))
+    best = tied[np.argmax(cutoffs[tied])]
+    return dict(threshold=float(cutoffs[best]), Youden_J=float(objective[best]),
+                sensitivity=float(tpr[best]), specificity=float(1 - fpr[best]),
+                rule=THRESHOLD_RULE, tie_break="highest_finite_cutoff", nodes=len(labels),
+                outer_test_used=False)
+
+
+def metrics(labels, logits, threshold):
+    if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("Classification requires a finite selected threshold in [0, 1]")
+    scores = raw_scores(logits)
+    predicted = scores >= threshold
     return dict(AUC=float(roc_auc_score(labels, scores)), accuracy=float(accuracy_score(labels, predicted)),
                 precision=float(precision_score(labels, predicted, zero_division=0)),
                 recall=float(recall_score(labels, predicted, zero_division=0)),
-                F1=float(f1_score(labels, predicted, zero_division=0)), threshold=.5,
+                F1=float(f1_score(labels, predicted, zero_division=0)), threshold=float(threshold),
                 threshold_semantics="raw_relative_score_not_map_percentile_or_probability")
 
 
@@ -178,11 +208,10 @@ def _fit(data, meta, cfg, train_indices, validation_indices, epochs, label):
         improved = validation_indices is None
         if validation_indices is not None:
             logits = predict_logits(model, x, edges, attrs, validation_indices, options["inference_batch_size"])
-            validation = metrics(data["labels"][validation_indices], logits)
-            row["validation_AUC"] = validation["AUC"]
-            improved = validation["AUC"] > best_auc
+            row["validation_AUC"] = float(roc_auc_score(data["labels"][validation_indices], raw_scores(logits)))
+            improved = row["validation_AUC"] > best_auc
             if improved:
-                best_auc = validation["AUC"]
+                best_auc = row["validation_AUC"]
         history.append(row)
         if improved:
             best_epoch, stale = epoch, 0
@@ -199,7 +228,8 @@ def _fit(data, meta, cfg, train_indices, validation_indices, epochs, label):
 
 
 def _binding(cfg, work):
-    return dict(model_settings=cfg["model"], training_settings=_training_signature(cfg["training"]),
+    return dict(method=SCHEMA, threshold_rule=THRESHOLD_RULE,
+                model_settings=cfg["model"], training_settings=_training_signature(cfg["training"]),
                 prepared_sha256=sha256(work / "prepared.npz"),
                 metadata_sha256=sha256(work / "prepared_metadata.json"))
 
@@ -212,6 +242,10 @@ def _read_cv(cfg, work):
     for name, digest in result["artifacts_sha256"].items():
         if sha256(folder / name) != digest:
             raise ValueError(f"Cross-validation artifact changed: {name}")
+    with np.load(folder / "oof.npz", allow_pickle=False) as oof:
+        expected = select_youden_threshold(oof["labels"], oof["raw_scores"])
+    if result.get("threshold_selection") != expected:
+        raise ValueError("Cross-validation threshold changed or was not selected from development OOF scores")
     return result
 
 
@@ -240,7 +274,7 @@ def cross_validate(cfg):
                 raise ValueError("Duplicate OOF validation nodes")
             oof[valid_ids] = logits.numpy()
             results.append(dict(number=fold["number"], best_epoch=epoch, train_nodes=len(train_ids),
-                                validation_nodes=len(valid_ids), metrics=metrics(data["labels"][valid_ids], logits)))
+                                validation_nodes=len(valid_ids)))
             torch.save(dict(state_dict={key: value.detach().cpu() for key, value in model.state_dict().items()},
                             fold=fold["number"], cardinalities=fold["cardinalities"],
                             binding=_binding(cfg, work)), folder / f"{name}.pt")
@@ -250,11 +284,19 @@ def cross_validate(cfg):
         if not np.isfinite(oof[dev]).all() or np.isfinite(oof[data["test_indices"]]).any():
             raise ValueError("Invalid OOF coverage or outer-test leakage")
         np.savez_compressed(folder / "oof.npz", node_indices=dev, labels=data["labels"][dev],
-                            raw_scores=torch.sigmoid(torch.as_tensor(oof[dev])).numpy())
+                            raw_scores=raw_scores(oof[dev]))
         artifacts.append("oof.npz")
+        selection = select_youden_threshold(data["labels"][dev], raw_scores(oof[dev]))
+        threshold = selection["threshold"]
+        for fold in results:
+            valid = data[f"fold_{fold['number']}_validation"]
+            fold["metrics"] = metrics(data["labels"][valid], oof[valid], threshold)
+        write_json(folder / "threshold_selection.json", selection)
+        artifacts.append("threshold_selection.json")
         auc = [fold["metrics"]["AUC"] for fold in results]
         result = dict(binding=_binding(cfg, work), folds=results, mean_fold_AUC=float(np.mean(auc)),
-                      std_fold_AUC=float(np.std(auc)), pooled_OOF_metrics=metrics(data["labels"][dev], oof[dev]),
+                      std_fold_AUC=float(np.std(auc)), threshold_selection=selection,
+                      pooled_OOF_metrics=metrics(data["labels"][dev], oof[dev], threshold),
                       refit_epochs=max(1, int(np.rint(np.median([fold["best_epoch"] for fold in results])))),
                       refit_rule="rounded_median_best_epoch_across_three_development_folds",
                       outer_test_used=False,
@@ -281,9 +323,11 @@ def train(cfg):
                                      cv["refit_epochs"], "final")
         x, edges, attrs = tensors(data, torch.device(cfg["training"]["device"]))
         logits = predict_logits(model, x, edges, attrs, data["test_indices"], cfg["training"]["inference_batch_size"])
-        result = metrics(data["labels"][data["test_indices"]], logits)
+        threshold = cv["threshold_selection"]["threshold"]
+        result = metrics(data["labels"][data["test_indices"]], logits, threshold)
+        result["threshold_selection_rule"] = THRESHOLD_RULE
         torch.save(dict(state_dict={key: value.detach().cpu() for key, value in model.state_dict().items()},
-                        binding=_binding(cfg, work), best_epoch=epoch,
+                        binding=_binding(cfg, work), best_epoch=epoch, classification_threshold=threshold,
                         cv_summary_sha256=sha256(work / "cross_validation/summary.json")), work / "model.pt")
         write_json(work / "training_history.json", history)
         write_json(work / "test_metrics.json", result)
@@ -301,10 +345,11 @@ def predict(cfg):
     status(work, "predict", "running")
     try:
         data, meta = load_prepared(cfg)
-        _read_cv(cfg, work)
+        cv = _read_cv(cfg, work)
         checkpoint = torch.load(work / "model.pt", map_location="cpu", weights_only=True)
         if (checkpoint["binding"] != _binding(cfg, work) or checkpoint["cv_summary_sha256"] !=
-                sha256(work / "cross_validation/summary.json")):
+                sha256(work / "cross_validation/summary.json") or
+                checkpoint.get("classification_threshold") != cv["threshold_selection"]["threshold"]):
             raise ValueError("Checkpoint/input/configuration mismatch")
         device = torch.device(cfg["training"]["device"])
         model = _model(meta, cfg["model"], device)
