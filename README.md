@@ -5,8 +5,20 @@
 Public method code for confidential geoscience inputs: assay preprocessing,
 center-grouped three-fold cross-validation, radius graphs, and GeoKA-GNN with
 **distance, along-fault, cross-fault and same-igneous-body** relations. Data owners
-supply their own local inputs. No research data, real sample coordinates, fitted
-weights or research results are distributed.
+supply their own local inputs. Original research datasets, sample coordinate
+tables, fitted weights and numerical experiment outputs are not distributed.
+
+## Model architecture
+
+**Overall framework.** Multi-source geoscience features and spatial/geological
+relations feed GeoKA-GNN for mineral prospectivity mapping.
+
+![Overall framework of GeoKA-GNN](docs/figures/geoka-gnn-framework.jpg)
+
+**KAN relation encoding and propagation.** Node-pair features and edge attributes
+support relation encoding, attention, gated message aggregation and residual updates.
+
+![KAN relation encoding and propagation in GeoKA-GNN](docs/figures/geoka-gnn-relation-encoding-propagation.jpg)
 
 ## Install and synthetic demo
 

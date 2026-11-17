@@ -1,7 +1,8 @@
-"""Fail closed on unexpected files in a source-only publication folder.
+"""Fail closed on unexpected files in a public source/documentation folder.
 
 This checks the physical tree, not just .gitignore. Run on the clean release
 folder; local experiments must be removed from that copy before publication.
+Only the two explicitly approved README figures are permitted as binary assets.
 """
 import argparse
 import hashlib
@@ -10,6 +11,8 @@ import re
 import sys
 
 ROOT_FILES = {"README.md", "README.zh-CN.md", "pyproject.toml", ".gitignore", ".gitattributes", "PUBLICATION_FILES.txt"}
+PUBLIC_IMAGES = {"docs/figures/geoka-gnn-framework.jpg",
+                 "docs/figures/geoka-gnn-relation-encoding-propagation.jpg"}
 PATTERNS = [
     ("absolute Windows path", re.compile(r"(?i)[a-z]:[\\/]")),
     ("private-key material", re.compile(r"BEGIN [A-Z ]*PRIVATE KEY")),
@@ -30,6 +33,16 @@ def audit(root):
         if path.is_dir():
             continue
         name = relative.as_posix()
+        if name in PUBLIC_IMAGES:
+            if not 0 < path.stat().st_size <= 10000000:
+                failures.append(f"Invalid documentation image size: {name}")
+                continue
+            payload = path.read_bytes()
+            if not payload.startswith(b"\xff\xd8\xff") or not payload.endswith(b"\xff\xd9"):
+                failures.append(f"Not a JPEG documentation image: {name}")
+                continue
+            files.append(name)
+            continue
         allowed = (name in ROOT_FILES or name == "configs/default.yaml"
                    or relative.parts[0] == "src" and path.suffix == ".py"
                    or relative.parts[0] == "tests" and path.suffix == ".py"
@@ -54,7 +67,7 @@ def audit(root):
 
 
 def write_manifest(root, files):
-    lines = ["Source-only publication inventory (this file excludes itself).", "SHA256  relative_path", ""]
+    lines = ["Public source and documentation inventory (this file excludes itself).", "SHA256  relative_path", ""]
     for name in sorted(set(files) - {"PUBLICATION_FILES.txt"}):
         lines.append(hashlib.sha256((root / name).read_bytes()).hexdigest() + "  " + name)
     (root / "PUBLICATION_FILES.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -101,7 +114,7 @@ def main():
     if failures:
         print("PUBLIC SOURCE CHECK FAILED\n" + "\n".join(failures))
         sys.exit(1)
-    print(f"PUBLIC SOURCE CHECK PASSED: {len(files)} UTF-8 source/config/documentation files; no data or weights.")
+    print(f"PUBLIC SOURCE CHECK PASSED: {len(files)} approved source/config/documentation files and figures; no input datasets or weights.")
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ local/
 *.docx
 *.png
 *.jpg
+!docs/figures/geoka-gnn-framework.jpg
+!docs/figures/geoka-gnn-relation-encoding-propagation.jpg
 *.zip
 *.log
 .env
