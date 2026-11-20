@@ -53,6 +53,8 @@ sensitivity + specificity - 1. Among tied maxima, the highest finite cutoff is s
 The prediction rule is score >= cutoff. The chosen threshold and objective are
 saved in `cross_validation/threshold_selection.json` and the CV summary, with the
 cutoff also stored in the final checkpoint and test metrics.
+The `cross-validate` and `train` commands print the selected cutoff, including
+when the cross-validation results are reused.
 
 The outer test is excluded from OOF coverage and threshold selection. CV reuse
 recomputes the threshold from frozen OOF scores and rejects a changed selection.

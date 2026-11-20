@@ -121,16 +121,23 @@ size 3 and cubic splines. See the configuration for every setting.
 
 ## Outputs and publication check
 
-Runs save fold-specific preprocessing, three CV checkpoints, OOF scores, the
-Youden threshold-selection record, fold mean/standard deviation, the final
-checkpoint and outer-test metrics. SHA-256
+Runs save fold-specific preprocessing, three CV checkpoints, OOF scores, fold
+mean/standard deviation, the final checkpoint and outer-test metrics. SHA-256
 binds inputs, samples, preparation, CV artifacts and the final checkpoint.
 Changed configurations require a new run directory.
 
+Both `cross-validate` and `train` print the selected classification threshold.
+In the run directory, `cross_validation/threshold_selection.json` records the
+cutoff, Youden J, sensitivity and specificity from pooled OOF predictions.
+The same cutoff is saved as `classification_threshold` in `model.pt` and
+`threshold` in `test_metrics.json`.
+
 `predict` checks full-domain raw scores, writes an area-percentile map, then
 reopens the GeoTIFF and audits its actual values. Separate CSV/JSON files include
-min/P05/P25/median/P75/P90/P95/max and area fractions >=0.5/0.8/0.9. A failed
-gate writes `failed`; only a passing map gate can write `complete`.
+min/P05/P25/median/P75/P90/P95/max and area fractions at fixed audit levels
+0.5, 0.8 and 0.9. These levels summarize the score distribution. The Youden
+cutoff applies to sample classification on raw sigmoid scores. A failed gate
+writes `failed`; only a passing map gate can write `complete`.
 
 **Background is not confirmed barren ground. Sigmoid scores and area percentiles
 are not calibrated occurrence probabilities.** Investigate failed raw scores

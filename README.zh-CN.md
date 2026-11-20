@@ -92,12 +92,17 @@ Along取两端余弦平方的较小值，乘以 `exp(-(d_i+d_j)/2000)`；多条�
 
 ## 输出和公开检查
 
-运行目录保存每折预处理、三份交叉验证权重、OOF分数、Youden阈值选择记录、折均值和标准差、最终权重及测试指标。
+运行目录保存每折预处理、三份交叉验证权重、OOF分数、折均值和标准差、最终权重及测试指标。
 样本、输入、预处理、CV产物与最终检查点通过SHA-256绑定，配置变化需要新的运行目录。
+
+`cross-validate` 和 `train` 都会在终端显示选定的分类阈值。运行目录中的
+`cross_validation/threshold_selection.json` 记录根据合并的OOF预测得到的阈值、Youden J、灵敏度及特异度。
+同一阈值也写入 `model.pt` 的 `classification_threshold` 和 `test_metrics.json` 的 `threshold`。
 
 `predict` 先验收全区原始分数，再导出面积百分位图，重新打开GeoTIFF读取实际值。
 独立CSV/JSON包含 `min、P05、P25、median、P75、P90、P95、max` 及 `>=0.5、>=0.8、>=0.9`
-的有效面积比例。失败状态为 `failed`，仅地图验收通过后才写 `complete`。
+的有效面积比例。这里的0.5、0.8和0.9是分布质检的固定统计点。Youden阈值用于基于原始sigmoid分数的样本分类。
+失败状态为 `failed`，仅地图验收通过后才写 `complete`。
 
 **背景样本不是已证实无矿；sigmoid分数和面积百分位都不是校准后的成矿发生概率。**
 原分数不通过时应排查原因，不能用排名或更换背景样本掩盖问题。

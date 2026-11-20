@@ -283,10 +283,12 @@ def cross_validate(cfg):
         dev = data["development_indices"]
         if not np.isfinite(oof[dev]).all() or np.isfinite(oof[data["test_indices"]]).any():
             raise ValueError("Invalid OOF coverage or outer-test leakage")
-        np.savez_compressed(folder / "oof.npz", node_indices=dev, labels=data["labels"][dev],
-                            raw_scores=raw_scores(oof[dev]))
+        development_labels = data["labels"][dev]
+        development_scores = raw_scores(oof[dev])
+        np.savez_compressed(folder / "oof.npz", node_indices=dev, labels=development_labels,
+                            raw_scores=development_scores)
         artifacts.append("oof.npz")
-        selection = select_youden_threshold(data["labels"][dev], raw_scores(oof[dev]))
+        selection = select_youden_threshold(development_labels, development_scores)
         threshold = selection["threshold"]
         for fold in results:
             valid = data[f"fold_{fold['number']}_validation"]
@@ -333,6 +335,7 @@ def train(cfg):
         write_json(work / "test_metrics.json", result)
         status(work, "train", "trained", refit_epochs=epoch, outer_test_evaluated_once=True,
                note="Raster release gate has not yet run")
+        return result
     except Exception as error:
         status(work, "train", "failed", error=str(error))
         raise
